@@ -9,6 +9,9 @@
 <meta name="apple-mobile-web-app-title" content="Mölkky" />
 <meta name="theme-color" content="#142418" />
 <title>Mölkky</title>
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="icon-192.png" />
+<link rel="apple-touch-icon" href="icon-192.png" />
 <style>
   html, body { margin: 0; padding: 0; background: #0c1710; overscroll-behavior: none; overflow: hidden; }
   #root { height: 100dvh; width: 100vw; overflow: hidden; }
@@ -364,33 +367,11 @@ var e,t,r="function"==typeof Symbol?Symbol:{},a=r.iterator||"@@iterator",n=r.toS
 //# sourceMappingURL=babel.min.js.map
 </script>
 </head>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
-<script>
-  // ---- online multiplayer setup ----
-  // Fill this in with your own free Firebase project's config (Firebase console -> Project settings ->
-  // your web app -> SDK setup and configuration). Realtime Database must be enabled, with rules that
-  // allow read/write (fine for a casual game — see the notes shared alongside this file).
-  var firebaseConfig = {
-    apiKey: "YOUR_API_KEY",
-    authDomain: "YOUR_PROJECT.firebaseapp.com",
-    databaseURL: "https://YOUR_PROJECT-default-rtdb.firebaseio.com",
-    projectId: "YOUR_PROJECT",
-  };
-  try {
-    if (firebaseConfig.apiKey !== "YOUR_API_KEY" && window.firebase) {
-      firebase.initializeApp(firebaseConfig);
-      window.firebaseDB = firebase.database();
-    }
-  } catch (e) {
-    console.warn("Firebase not configured — online multiplayer will show as unavailable.", e);
-  }
-</script>
 <body>
 <div id="root"></div>
 <script type="text/babel" data-presets="react">
 
-const { useState, useRef, useEffect } = React;
+const { useState, useRef } = React;
 
 /* ---------------------------------------------------------------------- */
 /* Official mölkky skittle formation — numbers 1-12 in an hourglass shape */
@@ -557,18 +538,6 @@ const BIG_HOUSE = (() => {
   return { x, y, scale: sc };
 })();
 
-// ---- online multiplayer helpers: talk to Firebase Realtime Database if it's been loaded on the page ----
-function fbRoomRef(code) {
-  return (typeof window !== "undefined" && window.firebaseDB && code)
-    ? window.firebaseDB.ref("molkkyRooms/" + code) : null;
-}
-function makeRoomCode() {
-  const letters = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O/1/I — easy to read aloud
-  let s = "";
-  for (let i = 0; i < 5; i++) s += letters[Math.floor(Math.random() * letters.length)];
-  return s;
-}
-
 function nextActiveIndex(fromIdx, arr) {
   const n = arr.length;
   for (let step = 1; step <= n; step++) {
@@ -603,15 +572,6 @@ function App() {
   const [devPanelOpen, setDevPanelOpen] = useState(false); // closed by default — open, it was covering the swipe area and blocking touches from ever reaching the field
   const [confirmQuit, setConfirmQuit] = useState(false);
 
-  // ---- online multiplayer (optional): syncs players/pins/turn through Firebase Realtime Database ----
-  const [mpEnabled, setMpEnabled] = useState(false);
-  const [mpRole, setMpRole] = useState(null); // "host" | "join"
-  const [roomCode, setRoomCode] = useState("");
-  const [roomInput, setRoomInput] = useState("");
-  const [myPlayerIdx, setMyPlayerIdx] = useState(null); // which player this device controls — null until claimed
-  const [mpStatus, setMpStatus] = useState("idle"); // idle | connecting | waiting | connected | error
-  const mpSuppressWrite = useRef(false); // true while applying an incoming remote update, so we don't immediately echo it back
-
   const [stick, setStick] = useState({ x: REST.x, y: REST.y, rot: 90 });
   const [flight, setFlight] = useState(null); // {x,y,rot,scale,shadowX,shadowY,shadowScale,shadowOpacity}
   const [swipe, setSwipe] = useState(null); // {sx,sy,st} while a swipe gesture is in progress
@@ -624,59 +584,6 @@ function App() {
       x: ((clientX - rect.left) / rect.width) * FIELD_W,
       y: ((clientY - rect.top) / rect.height) * FIELD_H,
     };
-  }
-
-  /* -------------------------- online multiplayer ------------------------- */
-  // subscribe to the room: apply incoming state to our local state. Pins/currentIdx are skipped while
-  // a throw is animating locally (`locked`) so an incoming update can't yank the pins mid-animation.
-  useEffect(() => {
-    if (!mpEnabled || !roomCode) return;
-    const ref = fbRoomRef(roomCode);
-    if (!ref) { setMpStatus("error"); return; }
-    const handler = (snap) => {
-      const data = snap.val();
-      if (!data) return;
-      mpSuppressWrite.current = true;
-      setMpStatus("connected");
-      if (data.players) setPlayers(data.players);
-      if (data.elimRule !== undefined) setElimRule(data.elimRule);
-      if (!locked) {
-        if (data.pins) setPins(data.pins);
-        if (data.currentIdx !== undefined) setCurrentIdx(data.currentIdx);
-      }
-      if (data.phase) setPhase(data.phase);
-      if (data.winner !== undefined) setWinner(data.winner);
-      setTimeout(() => { mpSuppressWrite.current = false; }, 0);
-    };
-    ref.on("value", handler);
-    return () => ref.off("value", handler);
-  }, [mpEnabled, roomCode, locked]);
-
-  // push our own state changes back to the room (skipped right after applying an incoming update,
-  // so the two clients don't just bounce the same write back and forth forever)
-  useEffect(() => {
-    if (!mpEnabled || !roomCode || mpSuppressWrite.current) return;
-    const ref = fbRoomRef(roomCode);
-    if (!ref) return;
-    ref.update({ players, pins, currentIdx, phase, winner, elimRule, updatedAt: Date.now() });
-  }, [mpEnabled, roomCode, players, pins, currentIdx, phase, winner, elimRule]);
-
-  function createRoom() {
-    if (!window.firebaseDB) { setMpStatus("error"); return; }
-    const code = makeRoomCode();
-    setRoomCode(code); setMpRole("host"); setMpEnabled(true); setMpStatus("waiting"); setMyPlayerIdx(null);
-    fbRoomRef(code).set({
-      players: [], pins: BASE_PINS, currentIdx: 0, phase: "setup", winner: null, elimRule: true, updatedAt: Date.now(),
-    });
-  }
-  function joinRoom() {
-    const code = roomInput.trim().toUpperCase();
-    if (!code || !window.firebaseDB) { setMpStatus("error"); return; }
-    setRoomCode(code); setMpRole("join"); setMpEnabled(true); setMpStatus("connecting"); setMyPlayerIdx(null);
-  }
-  function leaveRoom() {
-    setMpEnabled(false); setMpRole(null); setRoomCode(""); setMyPlayerIdx(null); setMpStatus("idle");
-    resetToSetup();
   }
 
   /* ---------------------------- setup screen --------------------------- */
@@ -714,7 +621,6 @@ function App() {
   /* ---------------------------- swipe input ---------------------------- */
   function onPointerDown(e) {
     if (locked || phase !== "playing") return;
-    if (mpEnabled && myPlayerIdx !== currentIdx) return; // not your turn on this device
     const p = svgPoint(e.clientX, e.clientY);
     svgRef.current?.setPointerCapture?.(e.pointerId);
     setSwipe({ sx: p.x, sy: p.y, st: performance.now() });
@@ -1088,48 +994,6 @@ function App() {
               <h1 className="font-serif text-3xl text-center tracking-tight" style={{ color: "#f2e9d8", textShadow: "0 2px 8px rgba(0,0,0,0.4)" }}>Mölkky</h1>
             </div>
             <p className="text-center mb-4 text-xs tracking-widest uppercase shrink-0" style={{ color: "#e0a848" }}>Kesäisen nurmikon täsmäpeli</p>
-
-            {/* online multiplayer entry point */}
-            <div className="rounded-2xl p-4 mb-3 shrink-0" style={cardStyle}>
-              <label className="block text-xs uppercase tracking-widest mb-2" style={{ color: "#8fae8a" }}>Verkkopeli (kokeellinen)</label>
-              {!mpEnabled && (
-                <div className="flex gap-2">
-                  <button onClick={createRoom} className="flex-1 rounded-lg px-3 py-2 font-medium text-sm" style={{ background: "#2c4d2f", color: "#f2e9d8", border: "1px solid #3a5a3f" }}>Luo huone</button>
-                  <input value={roomInput} onChange={e => setRoomInput(e.target.value.toUpperCase())} placeholder="KOODI"
-                    className="w-24 rounded-lg px-2 py-2 text-center outline-none font-mono"
-                    style={{ background: "#0f1c12", color: "#f2e9d8", border: "1px solid #3a5a3f" }} />
-                  <button onClick={joinRoom} className="rounded-lg px-3 py-2 font-medium text-sm shrink-0" style={{ background: "#b3382c", color: "#f2e9d8" }}>Liity</button>
-                </div>
-              )}
-              {mpEnabled && (
-                <div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm" style={{ color: "#f2e9d8" }}>
-                      Huone: <span className="font-mono font-bold" style={{ color: "#e0a848" }}>{roomCode}</span>
-                      {" — "}{mpStatus === "connected" ? "yhdistetty" : mpStatus === "error" ? "virhe" : "yhdistetään…"}
-                    </span>
-                    <button onClick={leaveRoom} className="text-xs px-2 py-1 rounded-md" style={{ color: "#c97b6d", border: "1px solid #3a5a3f" }}>Poistu</button>
-                  </div>
-                  {mpStatus === "error" && (
-                    <p className="text-xs mt-1.5" style={{ color: "#c97b6d" }}>Verkkopeliä ei saatu käyttöön tällä sivulla — tarkista Firebase-asetukset.</p>
-                  )}
-                  {players.length > 0 && (
-                    <div className="mt-2.5">
-                      <p className="text-xs mb-1.5" style={{ color: "#8fae8a" }}>Kuka sinä olet tällä laitteella?</p>
-                      <div className="flex flex-wrap gap-1.5">
-                        {players.map((p, i) => (
-                          <button key={i} onClick={() => setMyPlayerIdx(i)}
-                            className="text-xs px-2.5 py-1 rounded-md font-medium"
-                            style={{ background: myPlayerIdx === i ? "#e0a848" : "#0f1c12", color: myPlayerIdx === i ? "#1a1305" : "#c9d9c3", border: "1px solid #3a5a3f" }}>
-                            {p.name}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
 
             <div className="rounded-2xl p-4 mb-3 shrink-0" style={{ background: "rgba(20,36,24,0.7)", border: "1px solid #e0a848", boxShadow: "0 4px 18px rgba(0,0,0,0.35)" }}>
               <label className="block text-xs uppercase tracking-widest mb-2" style={{ color: "#8fae8a" }}>Lisää pelaaja</label>
@@ -1542,9 +1406,7 @@ function App() {
         <div className="absolute left-0 right-0 text-center px-2 pointer-events-none" style={{ bottom: "9vh" }}>
           <p className="text-xs inline-block px-2 py-0.5 rounded-full truncate max-w-full"
             style={{ color: "#e8f2e2", background: "rgba(10,20,12,0.55)" }}>
-            {mpEnabled && myPlayerIdx !== currentIdx
-              ? `Odotetaan pelaajaa ${players[currentIdx]?.name || ""}…`
-              : (hint || "Pyyhkäise sormella ylöspäin heittääksesi")}
+            {hint || "Pyyhkäise sormella ylöspäin heittääksesi"}
           </p>
         </div>
 
